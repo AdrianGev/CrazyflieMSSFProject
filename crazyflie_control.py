@@ -59,30 +59,30 @@ def fly_moves(moves):
     moves: list like ["right", "right", "down", "left", ...]
     Each move = one CELL in world coordinates.
 
-    Coordinate convention (world frame):
-      x+ = "right" on your board
-      x- = "left"
-      y+ = "down"
-      y- = "up"
+    Board-to-crazyflie coordinate mapping:
+      Board "down" (rows 1->2->3) = crazyflie X+ (forward)
+      Board "up"   (rows 3->2->1) = crazyflie X- (backward)
+      Board "right" (cols A->B->C) = crazyflie Y- (right)
+      Board "left"  (cols C->B->A) = crazyflie Y+ (left)
     """
     cf, hl, target_z = setup_cf()
 
-    # local idea of where the drone is in (x, y)
+    # local idea of where the drone is in (x, y) for crazyflie frame
     cur_x = 0.0
     cur_y = 0.0
 
     try:
         for m in moves:
             if m == "right":
-                cur_x += CELL
+                cur_y -= CELL  # crazyflie Y- = board right
             elif m == "left":
-                cur_x -= CELL
+                cur_y += CELL  # crazyflie Y+ = board left
             elif m == "down":
-                cur_y += CELL
+                cur_x -= CELL  # crazyflie X- = board down
             elif m == "up":
-                cur_y -= CELL
+                cur_x += CELL  # crazyflie X+ = board up
             else:
-                print(f"Ignoring unknown move: {m}")
+                print(f"Ignoring unknown jawn: {m}")
                 continue
 
             print(f"Move {m} -> go_to({cur_x:.3f}, {cur_y:.3f}, {target_z:.3f})")

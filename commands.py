@@ -19,6 +19,12 @@ def deltas_to_move_names(deltas):
     """
     [(0, +1), (+1, 0)] -> ["down", "right"]
     (assuming y+ is 'down' on your board)
+    
+    Grid coordinate convention:
+      x+ (dx=+1) = "right" (columns A->B->C->D)
+      x- (dx=-1) = "left"
+      y+ (dy=+1) = "down" (rows 1->2->3->...)
+      y- (dy=-1) = "up"
     """
     moves = []
     for dx, dy in deltas:
