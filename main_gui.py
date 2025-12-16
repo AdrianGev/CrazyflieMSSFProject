@@ -329,7 +329,9 @@ class PathfindingGUI:
 
         print(f"[GUI] Executing path on Crazyflie: {self.current_path_labels}")
         try:
-            execute_path_on_cf(self.current_path_labels)
+            planner = self.current_planner.get()
+            compress = planner in ("v2", "v3")
+            execute_path_on_cf(self.current_path_labels, compress=compress)
             print("[GUI] Crazyflie path execution finished.")
         except Exception as e:
             print("[GUI] Crazyflie error:", e)

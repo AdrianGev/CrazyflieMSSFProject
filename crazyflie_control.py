@@ -38,8 +38,9 @@ def setup_cf():
     time.sleep(2.0)
 
     print("Stabilizing at origin")
-    hl.go_to(0.0, 0.0, target_z, 0.0, 2.0)
-    time.sleep(2.3)
+    for _ in range(10):
+        hl.go_to(0.0, 0.0, target_z, 0.0, 0.20)
+        time.sleep(0.25)
 
     return cf, hl, target_z
 
@@ -89,6 +90,41 @@ def fly_moves(moves):
             # go_to(x, y, z, yaw, duration)
             hl.go_to(cur_x, cur_y, target_z, 0.0, 2.0)
             time.sleep(2.3)  # a bit longer than duration for safety
+
+    finally:
+        teardown_cf(cf, hl, target_z)
+
+
+def fly_segments(segments):
+    """
+    segments: [("right", 3), ("down", 2), ...]
+    Does one go_to per segment using the SAME mapping as fly_moves().
+    """
+    cf, hl, target_z = setup_cf()
+
+    cur_x = 0.0
+    cur_y = 0.0
+
+    try:
+        for move, count in segments:
+            if move == "right":
+                cur_y -= CELL * count
+            elif move == "left":
+                cur_y += CELL * count
+            elif move == "down":
+                cur_x -= CELL * count
+            elif move == "up":
+                cur_x += CELL * count
+            else:
+                print(f"Ignoring unknown move: {move}")
+                continue
+
+            duration = 2.0 * count  # keep speed consistent with fly_moves()
+            print(
+                f"Segment {move} x{count} -> go_to({cur_x:.3f}, {cur_y:.3f}, {target_z:.3f})"
+            )
+            hl.go_to(cur_x, cur_y, target_z, 0.0, duration)
+            time.sleep(duration + 0.3)
 
     finally:
         teardown_cf(cf, hl, target_z)

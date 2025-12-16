@@ -1,5 +1,5 @@
 from world import label_to_xy
-from crazyflie_control import fly_moves
+from crazyflie_control import fly_moves, fly_segments
 # cmds
 
 def path_labels_to_deltas(path_labels):
@@ -41,16 +41,48 @@ def deltas_to_move_names(deltas):
     return moves
 
 
-def execute_path_on_cf(path_labels):
+def compress_moves(moves):
     """
-      path_labels -> deltas -> move names -> Crazyflie flight
+    ["right","right","right","down","down"]
+    -> [("right", 3), ("down", 2)]
+    """
+    if not moves:
+        return []
+
+    out = []
+    cur = moves[0]
+    count = 1
+
+    for m in moves[1:]:
+        if m == cur:
+            count += 1
+        else:
+            out.append((cur, count))
+            cur = m
+            count = 1
+
+    out.append((cur, count))
+    return out
+
+
+def execute_path_on_cf(path_labels, compress=False):
+    """
+    Full pipeline:
+      path_labels -> deltas -> move names -> (optional compress) -> Crazyflie flight
     """
     if not path_labels or len(path_labels) < 2:
-        print("Path too short or empty so like nothing to do lol")
+        print("Path too short or empty, nothing to do.")
         return
 
     deltas = path_labels_to_deltas(path_labels)
     moves = deltas_to_move_names(deltas)
+
+    if compress:
+        segments = compress_moves(moves)
+        print(f"Raw moves: {len(moves)} | Segments: {len(segments)}")
+        print("Segments:", segments)
+        fly_segments(segments)
+        return
 
     print("Moves to fly:", moves)
     fly_moves(moves)
