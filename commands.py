@@ -65,7 +65,7 @@ def compress_moves(moves):
     return out
 
 
-def execute_path_on_cf(path_labels, compress=False):
+def execute_path_on_cf(path_labels, compress=False, on_state=None):
     """
     Full pipeline:
       path_labels -> deltas -> move names -> (optional compress) -> Crazyflie flight
@@ -81,8 +81,8 @@ def execute_path_on_cf(path_labels, compress=False):
         segments = compress_moves(moves)
         print(f"Raw moves: {len(moves)} | Segments: {len(segments)}")
         print("Segments:", segments)
-        fly_segments(segments)
+        fly_segments(segments, on_state=on_state)
         return
 
     print("Moves to fly:", moves)
-    fly_moves(moves)
+    fly_moves(moves, on_state=on_state)

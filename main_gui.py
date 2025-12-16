@@ -1,5 +1,6 @@
 import tkinter as tk
 from tkinter import ttk, messagebox
+import threading
 
 import world
 # gooey
@@ -40,6 +41,7 @@ class PathfindingGUI:
         self.current_planner = tk.StringVar(value="v1")
         self.deadline_ms = tk.DoubleVar(value=20.0)
         self.current_path_labels = []
+        self.drone_est_label = None
 
         self.drag_mode = None
 
@@ -158,6 +160,10 @@ class PathfindingGUI:
                 else:
                     fill = "#ffffff"  # free
 
+                # Drone marker (wins over other colors)
+                if self.drone_est_label is not None and label == self.drone_est_label:
+                    fill = "#6bb8ff"  # blue
+
                 self.canvas.create_rectangle(
                     x0, y0, x1, y1,
                     fill=fill,
@@ -178,6 +184,34 @@ class PathfindingGUI:
             return None, None, None
         label = xy_to_label(col, row)
         return col, row, label
+
+    def _clamp(self, v, lo, hi):
+        return lo if v < lo else hi if v > hi else v
+
+    def cf_meters_to_label(self, x_cf_m, y_cf_m):
+        """
+        Convert Crazyflie estimated (x,y) in meters -> grid label.
+
+        This matches your fly_moves() mapping exactly:
+          board right  => y_cf decreases
+          board down   => x_cf decreases
+        """
+        CELL_M = 0.10  # must match crazyflie_control.CELL
+
+        # Offsets in grid cells from the START cell
+        dcol = int(round((-y_cf_m) / CELL_M))
+        drow = int(round((-x_cf_m) / CELL_M))
+
+        start_col, start_row = label_to_xy(self.start_label)
+
+        col = start_col + dcol
+        row = start_row + drow
+
+        # Keep inside grid bounds so xy_to_label never index-errors
+        col = self._clamp(col, 0, GRID_COLS - 1)
+        row = self._clamp(row, 0, GRID_ROWS - 1)
+
+        return xy_to_label(col, row)
 
     def on_canvas_press(self, event):
         col, row, label = self._event_to_cell(event)
@@ -328,14 +362,36 @@ class PathfindingGUI:
             return
 
         print(f"[GUI] Executing path on Crazyflie: {self.current_path_labels}")
-        try:
-            planner = self.current_planner.get()
-            compress = planner in ("v2", "v3")
-            execute_path_on_cf(self.current_path_labels, compress=compress)
-            print("[GUI] Crazyflie path execution finished.")
-        except Exception as e:
-            print("[GUI] Crazyflie error:", e)
-            messagebox.showerror("Crazyflie error", f"Error during flight:\n{e}")
+
+        planner = self.current_planner.get()
+        compress = planner in ("v2", "v3")
+
+        def on_state(x_m, y_m, z_m):
+            lbl = self.cf_meters_to_label(x_m, y_m)
+
+            def ui_update():
+                self.drone_est_label = lbl
+                self.redraw_grid()
+
+            self.root.after(0, ui_update)
+
+        def worker():
+            try:
+                execute_path_on_cf(self.current_path_labels, compress=compress, on_state=on_state)
+                def done():
+                    self.drone_est_label = None
+                    self.redraw_grid()
+                    print("[GUI] Crazyflie path execution finished.")
+                self.root.after(0, done)
+            except Exception as e:
+                def ui_err():
+                    self.drone_est_label = None
+                    self.redraw_grid()
+                    print("[GUI] Crazyflie error:", e)
+                    messagebox.showerror("Crazyflie error", f"Error during flight:\n{e}")
+                self.root.after(0, ui_err)
+
+        threading.Thread(target=worker, daemon=True).start()
 
 
 def main():

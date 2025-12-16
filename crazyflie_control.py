@@ -2,10 +2,34 @@ import time
 import cflib.crtp
 from cflib.crazyflie import Crazyflie
 from cflib.crazyflie.high_level_commander import HighLevelCommander
+from cflib.crazyflie.log import LogConfig
 # ctrl
 URI = 'radio://0/80/2M'
 
 CELL = 0.10
+
+
+def start_state_logger(cf, on_state):
+    """
+    Calls on_state(x, y, z) at ~10 Hz.
+    """
+    lg = LogConfig(name="state", period_in_ms=100)  # 10 Hz
+    lg.add_variable("stateEstimate.x", "float")
+    lg.add_variable("stateEstimate.y", "float")
+    lg.add_variable("stateEstimate.z", "float")
+
+    def _cb(timestamp, data, logconf):
+        on_state(
+            data["stateEstimate.x"],
+            data["stateEstimate.y"],
+            data["stateEstimate.z"],
+        )
+
+    cf.log.add_config(lg)
+    lg.data_received_cb.add_callback(_cb)
+    lg.start()
+    return lg
+
 
 def reset_estimator(cf: Crazyflie):
     """Reset Kalman estimator so it doesn't start with a weird offset."""
@@ -16,8 +40,8 @@ def reset_estimator(cf: Crazyflie):
     time.sleep(2.0)  # let it chill
 
 
-def setup_cf():
-    """Connect, set estimator, reset, return (cf, hl, target_z)."""
+def setup_cf(on_state=None):
+    """Connect, set estimator, reset, return (cf, hl, target_z, logger)."""
     cflib.crtp.init_drivers()
 
     cf = Crazyflie(rw_cache='./cache')
@@ -42,11 +66,21 @@ def setup_cf():
         hl.go_to(0.0, 0.0, target_z, 0.0, 0.20)
         time.sleep(0.25)
 
-    return cf, hl, target_z
+    logger = None
+    if on_state is not None:
+        logger = start_state_logger(cf, on_state)
+
+    return cf, hl, target_z, logger
 
 
-def teardown_cf(cf: Crazyflie, hl: HighLevelCommander, target_z: float):
+def teardown_cf(cf: Crazyflie, hl: HighLevelCommander, target_z: float, logger=None):
     """Land and close link."""
+    if logger is not None:
+        try:
+            logger.stop()
+        except Exception:
+            pass
+
     print("Landing")
     hl.land(0.0, 1.5)
     time.sleep(2.0)
@@ -55,7 +89,7 @@ def teardown_cf(cf: Crazyflie, hl: HighLevelCommander, target_z: float):
     print("Link closed")
 
 
-def fly_moves(moves):
+def fly_moves(moves, on_state=None):
     """
     moves: list like ["right", "right", "down", "left", ...]
     Each move = one CELL in world coordinates.
@@ -66,7 +100,7 @@ def fly_moves(moves):
       Board "right" (cols A->B->C) = crazyflie Y- (right)
       Board "left"  (cols C->B->A) = crazyflie Y+ (left)
     """
-    cf, hl, target_z = setup_cf()
+    cf, hl, target_z, logger = setup_cf(on_state=on_state)
 
     # local idea of where the drone is in (x, y) for crazyflie frame
     cur_x = 0.0
@@ -92,15 +126,15 @@ def fly_moves(moves):
             time.sleep(2.3)  # a bit longer than duration for safety
 
     finally:
-        teardown_cf(cf, hl, target_z)
+        teardown_cf(cf, hl, target_z, logger=logger)
 
 
-def fly_segments(segments):
+def fly_segments(segments, on_state=None):
     """
     segments: [("right", 3), ("down", 2), ...]
     Does one go_to per segment using the SAME mapping as fly_moves().
     """
-    cf, hl, target_z = setup_cf()
+    cf, hl, target_z, logger = setup_cf(on_state=on_state)
 
     cur_x = 0.0
     cur_y = 0.0
@@ -127,4 +161,4 @@ def fly_segments(segments):
             time.sleep(duration + 0.3)
 
     finally:
-        teardown_cf(cf, hl, target_z)
+        teardown_cf(cf, hl, target_z, logger=logger)
