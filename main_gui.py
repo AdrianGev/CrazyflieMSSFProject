@@ -1,6 +1,7 @@
 import tkinter as tk
 from tkinter import ttk, messagebox
 import threading
+import time
 
 import world
 # gooey
@@ -18,10 +19,16 @@ from v2deadline import plan_v2
 from v3neural import plan_v3
 
 try:
-    from commands import execute_path_on_cf
+    from commands import execute_path_on_cf, execute_replanning_on_cf, execute_v1_with_dynamic_checks
     HAVE_CF = True
 except Exception:
     HAVE_CF = False
+
+try:
+    from dynamic_walls import try_place_annoying_wall
+    HAVE_DYNAMIC_WALLS = True
+except Exception:
+    HAVE_DYNAMIC_WALLS = False
 
 CELL_SIZE = 40  # pixels per grid cell
 GRID_COLS = len(COLS)      # 4
@@ -42,6 +49,16 @@ class PathfindingGUI:
         self.deadline_ms = tk.DoubleVar(value=20.0)
         self.current_path_labels = []
         self.drone_est_label = None
+
+        # Chaos mode state
+        self.chaos_enabled = False
+        self.chaos_period_s = tk.DoubleVar(value=5.0)
+        self.chaos_max_regens = tk.IntVar(value=10)
+        self.chaos_regens_done = 0
+        self.chaos_walls = []
+        self.max_chaos_walls = 6
+        self._last_chaos_time = 0.0
+        self._need_replan = True
 
         self.drag_mode = None
 
@@ -108,6 +125,16 @@ class PathfindingGUI:
         help_lbl = ttk.Label(ctrl_frame, text=help_text)
         help_lbl.grid(row=3, column=0, columnspan=4, sticky="w", pady=(8, 0))
 
+        # Chaos controls
+        self.chaos_btn = ttk.Button(ctrl_frame, text="Chaos: OFF", command=self.toggle_chaos)
+        self.chaos_btn.grid(row=4, column=0, columnspan=2, sticky="ew", pady=(6, 0))
+
+        ttk.Label(ctrl_frame, text="Period (s):").grid(row=4, column=2, sticky="e")
+        ttk.Entry(ctrl_frame, textvariable=self.chaos_period_s, width=8).grid(row=4, column=3, sticky="w", padx=5)
+
+        ttk.Label(ctrl_frame, text="Max regens:").grid(row=5, column=2, sticky="e")
+        ttk.Entry(ctrl_frame, textvariable=self.chaos_max_regens, width=8).grid(row=5, column=3, sticky="w", padx=5)
+
     def _build_canvas(self):
         canvas_width = GRID_COLS * CELL_SIZE
         canvas_height = GRID_ROWS * CELL_SIZE
@@ -133,6 +160,13 @@ class PathfindingGUI:
             self.current_planner.set("v2")
         else:
             self.current_planner.set("v3")
+
+    def toggle_chaos(self):
+        self.chaos_enabled = not self.chaos_enabled
+        self.chaos_btn.config(text=f"Chaos: {'ON' if self.chaos_enabled else 'OFF'}")
+        if self.chaos_enabled:
+            self.chaos_regens_done = 0
+            self._last_chaos_time = 0.0
 
     def redraw_grid(self):
         self.canvas.delete("all")
@@ -341,6 +375,79 @@ class PathfindingGUI:
             msg += f" | Hit deadline? {'YES' if hit_deadline else 'NO'}"
         print(msg)
 
+    def compute_deadline_path_from(self, start_label: str):
+        """Compute path from start_label to goal using current planner's deadline."""
+        deadline = float(self.deadline_ms.get())
+        planner = self.current_planner.get()
+
+        if planner == "v2":
+            return plan_v2(start_label, self.goal_label, deadline_ms=deadline)
+        if planner == "v3":
+            return plan_v3(start_label, self.goal_label, deadline_ms=deadline)
+        return None, False
+
+    def next_move_from_path(self, path_labels):
+        """Get the next move direction from current path."""
+        if not path_labels or len(path_labels) < 2:
+            return None
+        x1, y1 = label_to_xy(path_labels[0])
+        x2, y2 = label_to_xy(path_labels[1])
+        dx, dy = x2 - x1, y2 - y1
+        if dx == 1 and dy == 0:
+            return "right"
+        if dx == -1 and dy == 0:
+            return "left"
+        if dx == 0 and dy == 1:
+            return "down"
+        if dx == 0 and dy == -1:
+            return "up"
+        return None
+
+    def _record_chaos_wall(self, lbl):
+        """Track chaos wall and retire oldest if over limit."""
+        self.chaos_walls.append(lbl)
+        if len(self.chaos_walls) > self.max_chaos_walls:
+            old = self.chaos_walls.pop(0)
+            clear_obstacle(old)
+            print(f"[CHAOS] retired {old}")
+
+    def maybe_regenerate_walls(self):
+        """Attempt to place a chaos wall if conditions are met. Returns True if wall placed."""
+        if not self.chaos_enabled or not HAVE_DYNAMIC_WALLS:
+            return False
+
+        max_r = int(self.chaos_max_regens.get())
+        if max_r != 0 and self.chaos_regens_done >= max_r:
+            return False
+
+        period = float(self.chaos_period_s.get())
+        now = time.perf_counter()
+
+        if self._last_chaos_time != 0.0 and (now - self._last_chaos_time) < period:
+            return False
+
+        if self.drone_est_label is None:
+            return False
+
+        placed = try_place_annoying_wall(
+            drone_label=self.drone_est_label,
+            goal_label=self.goal_label,
+            current_path=self.current_path_labels,
+            forbid_neighbors=True,
+            max_tries=120,
+        )
+
+        self._last_chaos_time = now
+        self.chaos_regens_done += 1
+
+        if placed:
+            print(f"[CHAOS] placed {placed} ({self.chaos_regens_done}/{max_r})")
+            self._record_chaos_wall(placed)
+            self.redraw_grid()
+            return True
+
+        return False
+
     def fly_path(self):
         if not HAVE_CF:
             messagebox.showerror(
@@ -364,8 +471,8 @@ class PathfindingGUI:
         print(f"[GUI] Executing path on Crazyflie: {self.current_path_labels}")
 
         planner = self.current_planner.get()
-        compress = planner in ("v2", "v3")
 
+        # on_state callback for live tracking
         def on_state(x_m, y_m, z_m):
             lbl = self.cf_meters_to_label(x_m, y_m)
 
@@ -375,23 +482,88 @@ class PathfindingGUI:
 
             self.root.after(0, ui_update)
 
-        def worker():
-            try:
-                execute_path_on_cf(self.current_path_labels, compress=compress, on_state=on_state)
-                def done():
-                    self.drone_est_label = None
-                    self.redraw_grid()
-                    print("[GUI] Crazyflie path execution finished.")
-                self.root.after(0, done)
-            except Exception as e:
-                def ui_err():
-                    self.drone_est_label = None
-                    self.redraw_grid()
-                    print("[GUI] Crazyflie error:", e)
-                    messagebox.showerror("Crazyflie error", f"Error during flight:\n{e}")
-                self.root.after(0, ui_err)
+        def flight_done():
+            self.drone_est_label = None
+            self.redraw_grid()
+            print("[GUI] Crazyflie path execution finished.")
 
-        threading.Thread(target=worker, daemon=True).start()
+        def flight_error(e):
+            self.drone_est_label = None
+            self.redraw_grid()
+            print("[GUI] Crazyflie error:", e)
+            messagebox.showerror("Crazyflie error", f"Error during flight:\n{e}")
+
+        # v1 behavior: fixed path (or checked fixed path if Chaos ON)
+        if planner == "v1":
+            def v1_worker():
+                try:
+                    if self.chaos_enabled:
+                        # v1 + Chaos: land if next step blocked
+                        execute_v1_with_dynamic_checks(self.current_path_labels, on_state=on_state)
+                    else:
+                        # v1 normal: fixed path flight
+                        execute_path_on_cf(self.current_path_labels, compress=False, on_state=on_state)
+                    self.root.after(0, flight_done)
+                except Exception as e:
+                    self.root.after(0, lambda: flight_error(e))
+
+            threading.Thread(target=v1_worker, daemon=True).start()
+            return
+
+        # v2/v3 behavior: segmented flight (no chaos) or replanning loop (chaos ON)
+        if not self.chaos_enabled:
+            # v2/v3 normal: compressed segmented flight
+            def v2v3_fixed_worker():
+                try:
+                    execute_path_on_cf(self.current_path_labels, compress=True, on_state=on_state)
+                    self.root.after(0, flight_done)
+                except Exception as e:
+                    self.root.after(0, lambda: flight_error(e))
+
+            threading.Thread(target=v2v3_fixed_worker, daemon=True).start()
+            return
+
+        # v2/v3 + Chaos: replanning loop
+        self._need_replan = True
+        # Initialize drone position to start label (logger will update it)
+        self.drone_est_label = self.start_label
+
+        def step_provider():
+            if self.drone_est_label is None:
+                return None
+            if self.drone_est_label == self.goal_label:
+                return None
+
+            # Maybe regenerate walls (chaos mode)
+            if self.maybe_regenerate_walls():
+                self._need_replan = True
+
+            # Replan if needed or if drone position doesn't match path start
+            if self._need_replan or not self.current_path_labels or self.current_path_labels[0] != self.drone_est_label:
+                path, hit = self.compute_deadline_path_from(self.drone_est_label)
+                if not path:
+                    print("[REPLAN] no path -> stopping")
+                    return None
+                self.current_path_labels = path
+                self._need_replan = False
+                self.root.after(0, self.redraw_grid)
+
+            move = self.next_move_from_path(self.current_path_labels)
+            if move is None:
+                return None
+
+            # Advance path
+            self.current_path_labels = self.current_path_labels[1:]
+            return move
+
+        def v2v3_worker():
+            try:
+                execute_replanning_on_cf(step_provider, on_state=on_state)
+                self.root.after(0, flight_done)
+            except Exception as e:
+                self.root.after(0, lambda: flight_error(e))
+
+        threading.Thread(target=v2v3_worker, daemon=True).start()
 
 
 def main():

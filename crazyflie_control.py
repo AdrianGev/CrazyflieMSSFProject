@@ -9,6 +9,19 @@ URI = 'radio://0/80/2M'
 CELL = 0.10
 
 
+def apply_move_to_xy(cur_x, cur_y, move, count=1):
+    """Apply a move to current position using the same mapping as fly_moves/fly_segments."""
+    if move == "right":
+        cur_y -= CELL * count
+    elif move == "left":
+        cur_y += CELL * count
+    elif move == "down":
+        cur_x -= CELL * count
+    elif move == "up":
+        cur_x += CELL * count
+    return cur_x, cur_y
+
+
 def start_state_logger(cf, on_state):
     """
     Calls on_state(x, y, z) at ~10 Hz.
@@ -159,6 +172,75 @@ def fly_segments(segments, on_state=None):
             )
             hl.go_to(cur_x, cur_y, target_z, 0.0, duration)
             time.sleep(duration + 0.3)
+
+    finally:
+        teardown_cf(cf, hl, target_z, logger=logger)
+
+
+def fly_replanning(step_provider, on_state=None):
+    """
+    Replanning flight: calls step_provider() for each move.
+    step_provider returns a move string ("right", "left", etc.) or None to stop.
+    """
+    cf, hl, target_z, logger = setup_cf(on_state=on_state)
+    cur_x, cur_y = 0.0, 0.0
+
+    # Give logger time to send first state estimate
+    time.sleep(0.5)
+
+    try:
+        while True:
+            m = step_provider()
+            if m is None:
+                break
+
+            cur_x, cur_y = apply_move_to_xy(cur_x, cur_y, m, count=1)
+            print(f"[REPLAN] Move {m} -> go_to({cur_x:.3f}, {cur_y:.3f}, {target_z:.3f})")
+            hl.go_to(cur_x, cur_y, target_z, 0.0, 2.0)
+            time.sleep(2.3)
+
+    finally:
+        teardown_cf(cf, hl, target_z, logger=logger)
+
+
+def fly_fixed_path_with_checks(path_labels, stop_if_blocked=True, on_state=None):
+    """
+    Follows a fixed planned path, but BEFORE each step checks if the NEXT cell is now blocked.
+    If blocked: land in place.
+    """
+    import world
+
+    cf, hl, target_z, logger = setup_cf(on_state=on_state)
+    cur_x, cur_y = 0.0, 0.0
+
+    try:
+        for i in range(len(path_labels) - 1):
+            nxt_lbl = path_labels[i + 1]
+
+            x, y = world.label_to_xy(nxt_lbl)
+            if stop_if_blocked and world.grid[y][x] == 1:
+                print(f"[V1] Next cell {nxt_lbl} blocked -> landing now")
+                break
+
+            x1, y1 = world.label_to_xy(path_labels[i])
+            x2, y2 = world.label_to_xy(nxt_lbl)
+            dx, dy = x2 - x1, y2 - y1
+
+            if dx == 1 and dy == 0:
+                m = "right"
+            elif dx == -1 and dy == 0:
+                m = "left"
+            elif dx == 0 and dy == 1:
+                m = "down"
+            elif dx == 0 and dy == -1:
+                m = "up"
+            else:
+                print(f"[V1] Non-4dir step {path_labels[i]}->{nxt_lbl} -> landing")
+                break
+
+            cur_x, cur_y = apply_move_to_xy(cur_x, cur_y, m, count=1)
+            hl.go_to(cur_x, cur_y, target_z, 0.0, 2.0)
+            time.sleep(2.3)
 
     finally:
         teardown_cf(cf, hl, target_z, logger=logger)

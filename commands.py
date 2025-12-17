@@ -1,5 +1,5 @@
 from world import label_to_xy
-from crazyflie_control import fly_moves, fly_segments
+from crazyflie_control import fly_moves, fly_segments, fly_replanning, fly_fixed_path_with_checks
 # cmds
 
 def path_labels_to_deltas(path_labels):
@@ -86,3 +86,13 @@ def execute_path_on_cf(path_labels, compress=False, on_state=None):
 
     print("Moves to fly:", moves)
     fly_moves(moves, on_state=on_state)
+
+
+def execute_replanning_on_cf(step_provider, on_state=None):
+    """Run replanning flight with step_provider callback."""
+    fly_replanning(step_provider, on_state=on_state)
+
+
+def execute_v1_with_dynamic_checks(path_labels, on_state=None):
+    """Run v1 fixed path flight with dynamic obstacle checks (lands if blocked)."""
+    fly_fixed_path_with_checks(path_labels, stop_if_blocked=True, on_state=on_state)
