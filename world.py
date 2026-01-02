@@ -1,5 +1,5 @@
 COLS = ["A", "B", "C", "D"]
-ROWS = list(range(1, 13))  # 1..12
+ROWS = list(range(1, 8))  # 1..7
 
 # grid[y][x], y = row index (0..11), x = col index (0..3)
 # 0 = free, 1 = obstacle

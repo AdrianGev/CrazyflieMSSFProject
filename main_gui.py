@@ -2,6 +2,9 @@ import tkinter as tk
 from tkinter import ttk, messagebox
 import threading
 import time
+import os
+import sys
+import subprocess
 
 import world
 # gooey
@@ -29,6 +32,12 @@ try:
     HAVE_DYNAMIC_WALLS = True
 except Exception:
     HAVE_DYNAMIC_WALLS = False
+
+try:
+    from vision_motion_to_world import VisionObstacleUpdater
+    HAVE_VISION = True
+except Exception:
+    HAVE_VISION = False
 
 CELL_SIZE = 40  # pixels per grid cell
 GRID_COLS = len(COLS)      # 4
@@ -59,6 +68,13 @@ class PathfindingGUI:
         self.max_chaos_walls = 6
         self._last_chaos_time = 0.0
         self._need_replan = True
+
+        # Vision (camera obstacles)
+        self.vision_enabled = False
+        self.vision_debug = tk.BooleanVar(value=False)
+        self.vision = None
+        self.vision_thread = None
+        self.vision_stop_flag = False
 
         self.drag_mode = None
 
@@ -135,6 +151,14 @@ class PathfindingGUI:
         ttk.Label(ctrl_frame, text="Max regens:").grid(row=5, column=2, sticky="e")
         ttk.Entry(ctrl_frame, textvariable=self.chaos_max_regens, width=8).grid(row=5, column=3, sticky="w", padx=5)
 
+        # Vision controls
+        self.vision_btn = ttk.Button(ctrl_frame, text="Vision: OFF", command=self.toggle_vision)
+        self.vision_btn.grid(row=6, column=0, columnspan=2, sticky="ew", pady=(6, 0))
+
+        ttk.Checkbutton(ctrl_frame, text="Vision debug windows", variable=self.vision_debug).grid(
+            row=6, column=2, columnspan=2, sticky="w", pady=(6, 0)
+        )
+
     def _build_canvas(self):
         canvas_width = GRID_COLS * CELL_SIZE
         canvas_height = GRID_ROWS * CELL_SIZE
@@ -161,12 +185,112 @@ class PathfindingGUI:
         else:
             self.current_planner.set("v3")
 
+        # If leaving v3, force vision OFF
+        if self.current_planner.get() != "v3" and self.vision_enabled:
+            self.vision_enabled = False
+            self.vision_btn.config(text="Vision: OFF")
+            self.stop_vision()
+
     def toggle_chaos(self):
         self.chaos_enabled = not self.chaos_enabled
         self.chaos_btn.config(text=f"Chaos: {'ON' if self.chaos_enabled else 'OFF'}")
         if self.chaos_enabled:
             self.chaos_regens_done = 0
             self._last_chaos_time = 0.0
+
+    def toggle_vision(self):
+        self.vision_enabled = not self.vision_enabled
+        self.vision_btn.config(text=f"Vision: {'ON' if self.vision_enabled else 'OFF'}")
+
+        if self.vision_enabled:
+            self.ensure_vision_ready()
+        else:
+            self.stop_vision()
+
+    def ensure_vision_ready(self):
+        if not HAVE_VISION:
+            messagebox.showwarning("Vision", "Vision module not available (check opencv/numpy).")
+            self.vision_enabled = False
+            self.vision_btn.config(text="Vision: OFF")
+            return False
+
+        # Only allow vision on v3
+        if self.current_planner.get() != "v3":
+            messagebox.showinfo("Vision", "Vision is only enabled for v3. Switch planner to v3 first.")
+            self.vision_enabled = False
+            self.vision_btn.config(text="Vision: OFF")
+            return False
+
+        # If calibration missing, run it
+        if not os.path.exists("H.npy"):
+            messagebox.showinfo("Vision", "Calibration needed. Click 4 floor corners, then press Enter.")
+            subprocess.call([sys.executable, "vision_calibrate.py"])
+
+        if not os.path.exists("H.npy"):
+            messagebox.showwarning("Vision", "Calibration not found (H.npy missing). Vision stays OFF.")
+            self.vision_enabled = False
+            self.vision_btn.config(text="Vision: OFF")
+            return False
+
+        if self.vision_thread is None:
+            self.start_vision()
+
+        return True
+
+    def start_vision(self):
+        self.vision_stop_flag = False
+
+        def worker():
+            try:
+                self.vision = VisionObstacleUpdater(cam_index=0)
+
+                while not self.vision_stop_flag:
+                    drone_lbl = self.drone_est_label
+
+                    added, removed = self.vision.step(
+                        start_label=self.start_label,
+                        goal_label=self.goal_label,
+                        drone_label=drone_lbl,
+                        debug=self.vision_debug.get()
+                    )
+
+                    if added or removed:
+                        if self.should_replan_for_changes(added, removed):
+                            self._need_replan = True
+
+                        self.root.after(0, self.redraw_grid)
+
+                    time.sleep(0.03)  # ~33 Hz
+            except Exception as e:
+                print("[VISION] stopped:", e)
+
+        self.vision_thread = threading.Thread(target=worker, daemon=True)
+        self.vision_thread.start()
+
+    def stop_vision(self):
+        self.vision_stop_flag = True
+        try:
+            if self.vision is not None:
+                self.vision.close()
+        except Exception:
+            pass
+        self.vision = None
+        self.vision_thread = None
+
+    def should_replan_for_changes(self, added, removed):
+        # Only v2/v3 do replanning
+        if self.current_planner.get() not in ("v2", "v3"):
+            return False
+
+        # If we don't have a path, any change should cause a replan
+        if not self.current_path_labels:
+            return True
+
+        # Replan only if changes touch the next few steps
+        window = 8
+        upcoming = set(self.current_path_labels[:window])
+        changed = set(added) | set(removed)
+        return bool(changed & upcoming)
 
     def redraw_grid(self):
         self.canvas.delete("all")
@@ -471,6 +595,11 @@ class PathfindingGUI:
         print(f"[GUI] Executing path on Crazyflie: {self.current_path_labels}")
 
         planner = self.current_planner.get()
+
+        # Ensure vision is ready for v3 if enabled
+        if planner == "v3" and self.vision_enabled:
+            if not self.ensure_vision_ready():
+                return
 
         # on_state callback for live tracking
         def on_state(x_m, y_m, z_m):
