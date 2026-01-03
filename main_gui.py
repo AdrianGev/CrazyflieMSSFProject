@@ -53,7 +53,7 @@ class PathfindingGUI:
         self.root.configure(bg=WINDOW_BG)
 
         self.start_label = "A1"
-        self.goal_label = "D12"
+        self.goal_label = "D7"
         self.current_planner = tk.StringVar(value="v1")
         self.deadline_ms = tk.DoubleVar(value=20.0)
         self.current_path_labels = []
@@ -75,6 +75,7 @@ class PathfindingGUI:
         self.vision = None
         self.vision_thread = None
         self.vision_stop_flag = False
+        self.issue_squares = set()  # Track squares that caused path issues
 
         self.drag_mode = None
 
@@ -255,8 +256,23 @@ class PathfindingGUI:
                     )
 
                     if added or removed:
-                        if self.should_replan_for_changes(added, removed):
+                        # Track issue squares (obstacles that blocked the path)
+                        path_set = set(self.current_path_labels)
+                        new_issues = added & path_set
+                        if new_issues:
+                            self.issue_squares |= new_issues
+                        
+                        # Check if any issue squares cleared
+                        cleared_issues = self.issue_squares & removed
+                        
+                        if self.should_replan_for_changes(added, removed) or cleared_issues:
                             self._need_replan = True
+                            print(f"[VISION] Set _need_replan=True (flying={self.drone_est_label is not None})")
+                            # Remove cleared issues from tracking
+                            self.issue_squares -= removed
+                            # Only auto-replan in GUI if NOT flying (step_provider handles flight replanning)
+                            if self.drone_est_label is None:
+                                self.root.after(0, self._auto_replan_if_needed)
 
                         self.root.after(0, self.redraw_grid)
 
@@ -291,6 +307,26 @@ class PathfindingGUI:
         upcoming = set(self.current_path_labels[:window])
         changed = set(added) | set(removed)
         return bool(changed & upcoming)
+
+    def _auto_replan_if_needed(self):
+        """Auto-replan when vision detects obstacle on current path."""
+        if not self._need_replan:
+            return
+        if not self.current_path_labels:
+            return
+
+        # Replan from start (or drone position if flying)
+        start = self.drone_est_label if self.drone_est_label else self.start_label
+        path, hit_deadline = self.compute_deadline_path_from(start)
+
+        if path:
+            self.current_path_labels = path
+            print(f"[VISION] Auto-replanned: {len(path)} steps from {start}")
+        else:
+            print("[VISION] Auto-replan failed: no path found")
+
+        self._need_replan = False
+        self.redraw_grid()
 
     def redraw_grid(self):
         self.canvas.delete("all")
@@ -639,9 +675,9 @@ class PathfindingGUI:
             threading.Thread(target=v1_worker, daemon=True).start()
             return
 
-        # v2/v3 behavior: segmented flight (no chaos) or replanning loop (chaos ON)
-        if not self.chaos_enabled:
-            # v2/v3 normal: compressed segmented flight
+        # v2/v3 behavior: segmented flight (no chaos/vision) or replanning loop (chaos OR vision ON)
+        if not self.chaos_enabled and not self.vision_enabled:
+            # v2/v3 normal: compressed segmented flight (no dynamic obstacles)
             def v2v3_fixed_worker():
                 try:
                     execute_path_on_cf(self.current_path_labels, compress=True, on_state=on_state)
@@ -652,12 +688,13 @@ class PathfindingGUI:
             threading.Thread(target=v2v3_fixed_worker, daemon=True).start()
             return
 
-        # v2/v3 + Chaos: replanning loop
+        # v2/v3 + Chaos OR Vision: replanning loop (drone follows updated path)
         self._need_replan = True
         # Initialize drone position to start label (logger will update it)
         self.drone_est_label = self.start_label
 
         def step_provider():
+            # Exact same logic as v2 chaos mode
             if self.drone_est_label is None:
                 return None
             if self.drone_est_label == self.goal_label:
@@ -666,6 +703,13 @@ class PathfindingGUI:
             # Maybe regenerate walls (chaos mode)
             if self.maybe_regenerate_walls():
                 self._need_replan = True
+
+            # Check if next cell in path is blocked (vision obstacles) - same as chaos
+            if self.current_path_labels and len(self.current_path_labels) >= 2:
+                next_lbl = self.current_path_labels[1]
+                x, y = label_to_xy(next_lbl)
+                if grid[y][x] == 1:
+                    self._need_replan = True
 
             # Replan if needed or if drone position doesn't match path start
             if self._need_replan or not self.current_path_labels or self.current_path_labels[0] != self.drone_est_label:
