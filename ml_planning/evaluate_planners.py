@@ -30,8 +30,16 @@ def main():
                        help='Export evaluation results to CSV')
     parser.add_argument('--export_dir', type=str, default='export_data',
                        help='Directory for CSV exports')
+    parser.add_argument('--crazyflie', action='store_true',
+                       help='Simulate Crazyflie STM32F405 (168MHz Cortex-M4) performance')
     
     args = parser.parse_args()
+    
+    # calculate cpu slowdown factor for crazyflie simulation
+    # stm32f405: 168mhz cortex-m4 vs typical laptop: ~3-4ghz modern cpu
+    # rough estimate: ~20-25x slower for integer ops, ~50-100x for floating point
+    # conservative estimate for pathfinding workload: ~30x slowdown
+    cpu_slowdown = 30.0 if args.crazyflie else 1.0
     
     print("="*60)
     print("planner evaluation")
@@ -40,6 +48,8 @@ def main():
     print(f"Test scenarios: {args.num_scenarios}")
     print(f"Obstacles: {args.min_obstacles}-{args.max_obstacles}")
     print(f"Deadline: {args.deadline_ms} ms")
+    if args.crazyflie:
+        print(f"CPU simulation: Crazyflie STM32F405 (168MHz Cortex-M4, ~{cpu_slowdown:.0f}x slowdown)")
     print("="*60)
     
     # initialize evaluator
@@ -53,13 +63,13 @@ def main():
     
     if 'baseline' in args.planners:
         planners['Baseline A*'] = (
-            lambda world: AStarPlanner(world),
+            lambda world: AStarPlanner(world, cpu_slowdown_factor=cpu_slowdown),
             False  # no deadline
         )
     
     if 'deadline' in args.planners:
         planners['Deadline-Aware A*'] = (
-            lambda world: DeadlineAwarePlanner(world),
+            lambda world: DeadlineAwarePlanner(world, cpu_slowdown_factor=cpu_slowdown),
             True  # use deadline
         )
     
@@ -74,7 +84,7 @@ def main():
                 return ranker.score_node(x, y, goal_x, goal_y, world)
             
             planners['Neural-Guided A*'] = (
-                lambda world: NeuralGuidedPlanner(world, neural_ranker=neural_scorer),
+                lambda world: NeuralGuidedPlanner(world, neural_ranker=neural_scorer, cpu_slowdown_factor=cpu_slowdown),
                 True  # use deadline
             )
         else:

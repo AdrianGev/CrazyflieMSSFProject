@@ -53,8 +53,9 @@ class SearchResult:
 # or search space is exhausted
 class AStarPlanner:
     
-    def __init__(self, world: GridWorld):
+    def __init__(self, world: GridWorld, cpu_slowdown_factor: float = 1.0):
         self.world = world
+        self.cpu_slowdown_factor = cpu_slowdown_factor  # performance multiplier for embedded cpu simulation
         
     def heuristic(self, x: int, y: int, goal_x: int, goal_y: int) -> float:
         # heuristic function (manhattan distance)
@@ -94,6 +95,13 @@ class AStarPlanner:
             # get node with lowest f-score
             current = heapq.heappop(open_set)
             nodes_expanded += 1
+            
+            # simulate embedded cpu performance if enabled
+            if self.cpu_slowdown_factor > 1.0:
+                # busy-wait to simulate slower cpu (more accurate than sleep)
+                target_time = time.perf_counter() + (0.0001 * (self.cpu_slowdown_factor - 1.0))
+                while time.perf_counter() < target_time:
+                    pass
             
             # check if goal reached
             if current.x == goal_x and current.y == goal_y:
@@ -208,6 +216,13 @@ class DeadlineAwarePlanner(AStarPlanner):
             current = heapq.heappop(open_set)
             nodes_expanded += 1
             
+            # simulate embedded cpu performance if enabled
+            if self.cpu_slowdown_factor > 1.0:
+                # busy-wait to simulate slower cpu (more accurate than sleep)
+                target_time = time.perf_counter() + (0.0001 * (self.cpu_slowdown_factor - 1.0))
+                while time.perf_counter() < target_time:
+                    pass
+            
             # update best node (closest to goal by f-score)
             if current.f() < best_node.f():
                 best_node = current
@@ -268,8 +283,8 @@ class DeadlineAwarePlanner(AStarPlanner):
 # uses learned heuristic to guide search
 class NeuralGuidedPlanner(DeadlineAwarePlanner):
     
-    def __init__(self, world: GridWorld, neural_ranker: Optional[Callable] = None):
-        super().__init__(world)
+    def __init__(self, world: GridWorld, neural_ranker: Optional[Callable] = None, cpu_slowdown_factor: float = 1.0):
+        super().__init__(world, cpu_slowdown_factor=cpu_slowdown_factor)
         self.neural_ranker = neural_ranker
         
     def heuristic(self, x: int, y: int, goal_x: int, goal_y: int) -> float:

@@ -73,6 +73,23 @@ options:
 - `--planners` - which to test: baseline deadline neural (default: all three)
 - `--export_csv` - export detailed results to csv
 - `--export_dir` - where to save csvs (default: export_data)
+- `--crazyflie` - simulate crazyflie stm32f405 cpu performance (~30x slowdown)
+
+## simulating crazyflie hardware
+
+to test performance on the actual crazyflie's stm32f405 microcontroller:
+```bash
+python -m ml_planning.evaluate_planners --export_csv --crazyflie --deadline_ms 10.0
+```
+
+this simulates the 168mhz cortex-m4 cpu (~30x slower than laptop) to show:
+- realistic planning times on embedded hardware
+- which planner meets the deadline under real constraints
+- how node efficiency translates to actual time savings
+
+crazyflie specs:
+- stm32f405 main mcu (168mhz cortex-m4, 192kb sram, 1mb flash)
+- nrf51822 radio (32mhz cortex-m0, 16kb sram, 128kb flash)
 
 ## quick examples
 
