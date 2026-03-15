@@ -243,7 +243,18 @@ class DynamicEnvironmentEvaluator(PlannerEvaluator):
         for replan_idx in range(num_replans):
             # plan from current position
             planner = planner_factory(world)
-            result = planner.plan(current_pos, goal, deadline_ms=deadline_ms)
+            
+            # only pass deadline_ms if planner supports it
+            if deadline_ms is not None and hasattr(planner, 'plan'):
+                # check if plan method accepts deadline_ms
+                import inspect
+                sig = inspect.signature(planner.plan)
+                if 'deadline_ms' in sig.parameters:
+                    result = planner.plan(current_pos, goal, deadline_ms=deadline_ms)
+                else:
+                    result = planner.plan(current_pos, goal)
+            else:
+                result = planner.plan(current_pos, goal)
             
             total_nodes += result.nodes_expanded
             total_time += result.time_ms

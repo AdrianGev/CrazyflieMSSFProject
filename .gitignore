@@ -26,3 +26,6 @@ ml_planning/__pycache__/
 
 # export data
 export_data/
+
+# generated figures
+data_processing/figures/*.png

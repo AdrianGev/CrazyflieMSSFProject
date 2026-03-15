@@ -4,7 +4,7 @@ import os
 from ml_planning.grid_world import GridWorld
 from ml_planning.astar_planner import AStarPlanner, DeadlineAwarePlanner, NeuralGuidedPlanner
 from ml_planning.neural_ranker import NeuralRanker
-from ml_planning.evaluation import PlannerEvaluator
+from ml_planning.evaluation import PlannerEvaluator, DynamicEnvironmentEvaluator
 
 
 def main():
@@ -32,6 +32,8 @@ def main():
                        help='Directory for CSV exports')
     parser.add_argument('--crazyflie', action='store_true',
                        help='Simulate Crazyflie STM32F405 (168MHz Cortex-M4) performance')
+    parser.add_argument('--dynamic_trials', type=int, default=0,
+                       help='Number of dynamic (moving obstacles) trials to run')
     
     args = parser.parse_args()
     
@@ -235,6 +237,84 @@ def main():
                         })
         
         print(f"fig 4 data (path inflation) exported to {inflation_file}")
+    
+    # run dynamic environment evaluation if requested
+    if args.dynamic_trials > 0:
+        print("\n" + "="*60)
+        print("dynamic environment evaluation (mixed obstacles)")
+        print("="*60)
+        print(f"trials: {args.dynamic_trials}")
+        print(f"deadline: {args.deadline_ms} ms")
+        print("="*60)
+        
+        dynamic_evaluator = DynamicEnvironmentEvaluator(
+            grid_width=args.grid_width,
+            grid_height=args.grid_height
+        )
+        
+        dynamic_results = {}
+        
+        for planner_name, (factory, use_deadline) in planners.items():
+            print(f"\nevaluating {planner_name} on {args.dynamic_trials} dynamic scenarios...")
+            
+            trial_results = []
+            for trial_idx in range(args.dynamic_trials):
+                result = dynamic_evaluator.simulate_dynamic_scenario(
+                    planner_factory=factory,
+                    initial_obstacles=args.min_obstacles,
+                    num_replans=5,
+                    deadline_ms=args.deadline_ms if use_deadline else None
+                )
+                trial_results.append(result)
+            
+            # calculate aggregate metrics
+            successes = sum(1 for r in trial_results if r['success'])
+            avg_nodes = sum(r['total_nodes_expanded'] for r in trial_results) / len(trial_results)
+            avg_time = sum(r['total_time_ms'] for r in trial_results) / len(trial_results)
+            avg_replans = sum(r['replans_successful'] for r in trial_results) / len(trial_results)
+            
+            dynamic_results[planner_name] = {
+                'trials': args.dynamic_trials,
+                'successes': successes,
+                'success_rate': successes / args.dynamic_trials,
+                'avg_nodes': avg_nodes,
+                'avg_time_ms': avg_time,
+                'avg_replans': avg_replans,
+                'raw_results': trial_results
+            }
+            
+            print(f"\n{'='*60}")
+            print(f"planner: {planner_name}")
+            print(f"{'='*60}")
+            print(f"trials:              {args.dynamic_trials}")
+            print(f"success rate:        {successes / args.dynamic_trials:.1%}")
+            print(f"avg nodes expanded:  {avg_nodes:.1f}")
+            print(f"avg time (ms):       {avg_time:.2f}")
+            print(f"avg replans:         {avg_replans:.1f}")
+            print(f"{'='*60}")
+        
+        # export dynamic results to csv if requested
+        if args.export_csv:
+            dynamic_csv = os.path.join(args.export_dir, 'dynamic_mixed_results.csv')
+            with open(dynamic_csv, 'w', newline='') as f:
+                writer = csv.DictWriter(f, fieldnames=[
+                    'planner', 'trials', 'successes', 'success_rate',
+                    'avg_nodes_expanded', 'avg_time_ms', 'avg_replans'
+                ])
+                writer.writeheader()
+                
+                for name, metrics in dynamic_results.items():
+                    writer.writerow({
+                        'planner': name,
+                        'trials': metrics['trials'],
+                        'successes': metrics['successes'],
+                        'success_rate': metrics['success_rate'],
+                        'avg_nodes_expanded': metrics['avg_nodes'],
+                        'avg_time_ms': metrics['avg_time_ms'],
+                        'avg_replans': metrics['avg_replans']
+                    })
+            
+            print(f"\ndynamic results exported to {dynamic_csv}")
     
     print("\n" + "="*60)
     print("evaluation complete")
