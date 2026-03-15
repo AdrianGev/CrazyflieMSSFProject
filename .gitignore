@@ -18,3 +18,11 @@ wheels/
 
 cache/
 .venv/
+
+# ml planning (ignore trained models and training data)
+ml_planning/models/
+ml_planning/__pycache__/
+*.pkl
+
+# export data
+export_data/
